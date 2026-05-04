@@ -73,12 +73,14 @@ Sebelum scraper bisa berjalan, Anda perlu mengetahui struktur HTML website:
 
 ### Langkah 2 — Update selectors di kode
 
-Buka `scrapers/auth_handler.py`, cari bagian ini dan update:
+Buka `scrapers/auth_handler.py`, bagian `login()`. Selectors sudah di-update dengan:
 ```python
-msisdn_field_selector = "input[name='msisdn']"    # GANTI dengan hasil step 1
-password_field_selector = "input[name='password']" # GANTI dengan hasil step 1
-login_button_selector = "button[type='submit']"    # GANTI dengan hasil step 1
+msisdn_field_selector = "#username"      # HTML: <input id="username" name="username" ...>
+password_field_selector = "#password"    # HTML: <input id="password" name="password" ...>
+login_button_selector = "#sub"           # HTML: <input type="button" name="sub" id="sub" ...>
 ```
+
+Jika website Anda memiliki struktur berbeda, edit selectors sesuai hasil inspeksi F12 pada Langkah 1.
 
 ### Langkah 3 — Setup ChromeDriver
 
@@ -161,11 +163,13 @@ Monitor log: `tail -f logs/scraper.log`
 
 ## Status
 
-| Komponen | Status |
-|----------|--------|
-| Project structure, config, logging | ✅ Done |
-| Session manager, exceptions, models | ✅ Done |
-| JSON storage, scheduler | ✅ Done |
-| Auth handler selectors | ⏳ Update setelah explore website |
-| Data parser | ⏳ Implement setelah explore website |
-| Unit tests | ⏳ Pending |
+| Komponen | Status | Catatan |
+|----------|--------|---------|
+| Project structure, config, logging | ✅ Done | |
+| Session manager, exceptions, models | ✅ Done | |
+| JSON storage, scheduler | ✅ Done | |
+| Auth handler selectors | ✅ Done | Updated: #username, #password, #sub |
+| Data parser (scrapers/parser.py) | ✅ Created | Template ready, needs table selector customization |
+| Scheduler job workflow | ✅ Implemented | Full scraping pipeline with error handling |
+| Unit tests | ⏳ Pending | |
+

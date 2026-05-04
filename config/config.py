@@ -3,8 +3,11 @@ Configuration management for web scraper.
 Loads configuration from environment variables with validation.
 """
 import os
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Load .env file
 load_dotenv()
@@ -22,10 +25,10 @@ class Config:
         "BASE_URL", "https://xg.smshj.com"
     )
     LOGIN_URL: str = os.getenv(
-        "LOGIN_URL", "https://xg.smshj.com/hbshengma/operator/deliverydetail.html"
+        "LOGIN_URL", "https://xg.smshj.com/hbshengma/login.html"
     )
     REPORT_URL: str = os.getenv(
-        "REPORT_URL", "https://xg.smshj.com/hbshengma/operator/deliverydetail.html"
+        "REPORT_URL", "https://xg.smshj.com"
     )
 
     # Scraper Settings
@@ -59,7 +62,59 @@ class Config:
     SCHEDULE_TIME: str = os.getenv("SCHEDULE_TIME", "02:00")
     SCHEDULE_TIMEZONE: str = os.getenv("SCHEDULE_TIMEZONE", "UTC")
 
+    # Helper methods - Parse dates and target URLs
+    @staticmethod
+    def _parse_date(date_str: str) -> datetime:
+        """Parse date string (YYYY-MM-DD) to datetime with Jakarta timezone."""
+        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            return dt.replace(tzinfo=jakarta_tz)
+        except ValueError as e:
+            raise ValueError(f"Invalid date format '{date_str}': {e}")
+
+    @staticmethod
+    def _parse_target_urls(urls_json: str) -> Dict[str, str]:
+        """Parse TARGET_URLS from JSON string."""
+        try:
+            urls_dict = json.loads(urls_json)
+            if not isinstance(urls_dict, dict):
+                raise ValueError("TARGET_URLS must be a JSON object")
+            return urls_dict
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid TARGET_URLS JSON: {e}")
+
+    # Date Range (Asia/Jakarta timezone) - Lazy initialization
     @classmethod
+    def get_start_date(cls) -> datetime:
+        """Get START_DATE with Jakarta timezone."""
+        if not hasattr(cls, "_start_date"):
+            cls._start_date = cls._parse_date(os.getenv("START_DATE", "2026-01-01"))
+        return cls._start_date
+
+    @classmethod
+    def get_end_date(cls) -> datetime:
+        """Get END_DATE with Jakarta timezone."""
+        if not hasattr(cls, "_end_date"):
+            cls._end_date = cls._parse_date(os.getenv("END_DATE", "2026-05-05"))
+        return cls._end_date
+
+    @classmethod
+    def get_target_urls(cls) -> Dict[str, str]:
+        """Get TARGET_URLS from config."""
+        if not hasattr(cls, "_target_urls"):
+            default_urls = (
+                '{"paydetail": "/hbshengma/operator/paydetail.html", '
+                '"deliverydetail": "/hbshengma/operator/deliverydetail.html", '
+                '"cashdetail": "/hbshengma/operator/cashdetail.html", '
+                '"essDetail": "/hbshengma/operator/essDetail.html", '
+                '"mtOrder": "/hbshengma/operator/mtOrder.html", '
+                '"orderThird": "/hbshengma/operator/orderThird.html", '
+                '"orderThirdMachine": "/hbshengma/operator/orderThirdMachine.html", '
+                '"onlineOrderDetail": "/hbshengma/onlineOrderDetail.html"}'
+            )
+            cls._target_urls = cls._parse_target_urls(os.getenv("TARGET_URLS", default_urls))
+        return cls._target_urls
     def validate(cls) -> bool:
         """Validate critical configuration values."""
         if not cls.WEBSITE_MSISDN:

@@ -12,6 +12,16 @@ from utils.logging_setup import logger
 from utils.exceptions import StorageError
 
 
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder for datetime objects."""
+    
+    def default(self, obj):
+        """Convert datetime to ISO format string."""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 class JSONStorage:
     """Handle JSON file storage for scraped data."""
 
@@ -64,7 +74,7 @@ class JSONStorage:
 
             # Write JSON
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
+                json.dump(output_data, f, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
 
             logger.info(f"Data saved successfully: {filepath}")
             return filepath

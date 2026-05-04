@@ -51,11 +51,13 @@ class LoginHandler:
                 # These are placeholder selectors - you need to inspect the website
                 # and replace them with actual CSS selectors or XPath
 
-                # Wait for and fill MSISDN field
-                # You may need to change these selectors based on website HTML
-                msisdn_field_selector = "input[name='msisdn']"  # PLACEHOLDER
-                password_field_selector = "input[name='password']"  # PLACEHOLDER
-                login_button_selector = "button[type='submit']"  # PLACEHOLDER
+                # CSS selectors from website HTML inspection
+                # MSISDN field: <input id="username" name="username" ...>
+                # Password field: <input id="password" name="password" ...>
+                # Login button: <input type="button" name="sub" id="sub" ...>
+                msisdn_field_selector = "#username"
+                password_field_selector = "#password"
+                login_button_selector = "#sub"
 
                 self.session_manager.wait_for_element(By.CSS_SELECTOR, msisdn_field_selector)
                 msisdn_field = self.driver.find_element(By.CSS_SELECTOR, msisdn_field_selector)
