@@ -1,0 +1,70 @@
+# ─── Secrets & Credentials ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ─── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+
+# ─── Virtual Environments ───────────────────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# ─── Build & Distribution ───────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# ─── Testing & Coverage ─────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ─── Type Checkers ──────────────────────────────────────────────────────────
+.mypy_cache/
+.pytype/
+
+# ─── IDE & Editor ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.orig
+
+# ─── OS Files ───────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+desktop.ini
+._*
+
+# ─── Project Output ─────────────────────────────────────────────────────────
+logs/
+data/
+
+# ─── Selenium / Browser Drivers ─────────────────────────────────────────────
+chromedriver
+chromedriver.exe
+geckodriver
+geckodriver.exe
+*.crx
