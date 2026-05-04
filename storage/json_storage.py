@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 from config.config import Config
 from utils.logging_setup import logger
 from utils.exceptions import StorageError
@@ -41,14 +41,16 @@ class JSONStorage:
         logger.debug(f"Ensured data folder exists: {self.folder}")
 
     def save_data(
-        self, data: Dict[str, Any], filename: str = None
+        self, data: Dict[str, Any], filename: str = None, start_date=None, end_date=None
     ) -> str:
         """
-        Save data to JSON file with timestamp.
+        Save data to JSON file with timestamp or date range.
 
         Args:
             data: Data dictionary to save
             filename: Custom filename (optional)
+            start_date: Optional start date (datetime) for date range in filename
+            end_date: Optional end date (datetime) for date range in filename
 
         Returns:
             Path to saved file
@@ -58,8 +60,13 @@ class JSONStorage:
         """
         try:
             if filename is None:
-                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                filename = f"sales_data_{timestamp}.json"
+                if start_date and end_date:
+                    start_str = start_date.strftime("%Y-%m-%d") if hasattr(start_date, 'strftime') else str(start_date)[:10]
+                    end_str = end_date.strftime("%Y-%m-%d") if hasattr(end_date, 'strftime') else str(end_date)[:10]
+                    filename = f"scraping_report_{start_str}_to_{end_str}.json"
+                else:
+                    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                    filename = f"scraping_report_{timestamp}.json"
 
             filepath = os.path.join(self.folder, filename)
 
@@ -132,6 +139,64 @@ class JSONStorage:
         except Exception as e:
             logger.error(f"Error listing files: {str(e)}")
             return []
+
+    def save_per_target(
+        self,
+        all_data: List[Any],
+        start_date=None,
+        end_date=None,
+    ) -> List[str]:
+        """
+        Save each SalesStatisticData item as its own JSON file.
+        Filename format: {submenu}_{start_date}_to_{end_date}.json
+
+        Args:
+            all_data: List of SalesStatisticData objects
+            start_date: datetime for date range label
+            end_date: datetime for date range label
+
+        Returns:
+            List of saved file paths
+        """
+        saved_paths: List[str] = []
+
+        start_str = start_date.strftime("%Y-%m-%d") if start_date and hasattr(start_date, "strftime") else "unknown"
+        end_str = end_date.strftime("%Y-%m-%d") if end_date and hasattr(end_date, "strftime") else "unknown"
+
+        for page_data in all_data:
+            try:
+                submenu = getattr(page_data, "submenu", "unknown")
+                filename = f"{submenu}_{start_str}_to_{end_str}.json"
+                filepath = os.path.join(self.folder, filename)
+
+                output = {
+                    "metadata": {
+                        "submenu": submenu,
+                        "start_date": start_str,
+                        "end_date": end_str,
+                        "saved_at": datetime.now().isoformat(),
+                        "record_count": getattr(page_data, "record_count", 0),
+                    },
+                    "records": [
+                        {
+                            "scrape_timestamp": r.scrape_timestamp.isoformat(),
+                            **r.data,
+                        }
+                        for r in getattr(page_data, "records", [])
+                    ],
+                    "errors": getattr(page_data, "errors", []),
+                }
+
+                with open(filepath, "w", encoding="utf-8") as f:
+                    json.dump(output, f, indent=2, ensure_ascii=False, cls=DateTimeEncoder)
+
+                logger.info(f"Saved {len(output['records'])} records → {filename}")
+                saved_paths.append(filepath)
+
+            except Exception as e:
+                logger.error(f"Failed to save {getattr(page_data, 'submenu', '?')}: {e}")
+
+        return saved_paths
 
     def cleanup_old_files(self, keep_count: int = None) -> None:
         """

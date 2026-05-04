@@ -1,20 +1,31 @@
 """
 HTML parser for extracting sales data from website tables.
 """
+import time
 from bs4 import BeautifulSoup
 from typing import List, Dict, Any
 from datetime import datetime, timezone
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 
 from models.sales_data import SalesRecord, SalesStatisticData
 from utils.logging_setup import logger
 from utils.exceptions import ParsingError
 
+# Rows with these values in any cell are footer/summary rows — skip them
+_SKIP_ROW_VALUES = {"合计"}
+
+# Column names to exclude from extracted data
+_SKIP_COLUMNS = {"checkbox", "操作"}
+
 
 class DataExtractor:
     """Extract data from HTML pages."""
 
-    # Column mapping for each page target
-    COLUMN_MAPPING = {
+    # Column mapping for each page target, based on actual <thead> structure
+    COLUMN_MAPPING: Dict[str, List[str]] = {
         "paydetail": [
             "序号", "系统订单号", "支付渠道流水号", "设备ID", "设备名称",
             "货道", "持有人", "商品名称", "支付方式", "支付金额",
@@ -51,150 +62,248 @@ class DataExtractor:
             "序号", "系统订单号", "支付渠道流水号", "设备ID", "设备名称",
             "商品名称", "支付方式", "支付金额", "购买数量", "商品进价",
             "支付状态", "出货状态", "退款状态", "支付时间"
-        ]
+        ],
     }
+
+    @staticmethod
+    def _parse_one_page(html_content: str, page_name: str, columns: List[str]) -> List[SalesRecord]:
+        """
+        Extract data rows from a single page of HTML.
+        Returns list of SalesRecord with all columns mapped.
+        """
+        soup = BeautifulSoup(html_content, "html.parser")
+        table = soup.find("table")
+        if not table:
+            logger.warning(f"No table found in {page_name}")
+            return []
+
+        records: List[SalesRecord] = []
+        scrape_ts = datetime.now(timezone.utc)
+        col_count = 0
+
+        for row in table.find_all("tr")[1:]:  # skip header
+            cells = row.find_all("td")
+            if not cells:
+                continue
+
+            cell_texts = [c.get_text(strip=True) for c in cells]
+            col_count = len(cell_texts)
+
+            # Skip footer / summary rows
+            if any(v in _SKIP_ROW_VALUES for v in cell_texts):
+                continue
+
+            # Build data dict: zip column names with cell values
+            # Use provided columns; fallback to positional index if lengths differ
+            row_data: Dict[str, Any] = {}
+            for idx, text in enumerate(cell_texts):
+                col_name = columns[idx] if idx < len(columns) else f"col_{idx}"
+                if col_name in _SKIP_COLUMNS:
+                    continue
+                row_data[col_name] = text
+
+            if row_data:
+                records.append(SalesRecord(scrape_timestamp=scrape_ts, data=row_data))
+
+        if records:
+            logger.debug(f"{page_name}: parsed {len(records)} records ({col_count} columns)")
+        return records
+
+    @staticmethod
+    def _apply_date_filter(driver, start_date, end_date) -> bool:
+        """
+        Set date range filter in the form and click search.
+        
+        Args:
+            driver: Selenium WebDriver
+            start_date: datetime object (will be formatted as 'YYYY-MM-DD HH:MM:SS')
+            end_date: datetime object
+            
+        Returns:
+            True if filter applied, False if elements not found
+        """
+        try:
+            # Format dates as website expects
+            start_str = start_date.strftime("%Y-%m-%d 00:00:00")
+            end_str = end_date.strftime("%Y-%m-%d 23:59:59")
+            
+            logger.info(f"Applying date filter: {start_str} to {end_str}")
+            
+            # Set startTime field
+            start_field = driver.find_element(By.ID, "startTime")
+            driver.execute_script("arguments[0].value = arguments[1]", start_field, start_str)
+            logger.debug(f"Set startTime: {start_str}")
+            
+            # Set endTime field
+            end_field = driver.find_element(By.ID, "endTime")
+            driver.execute_script("arguments[0].value = arguments[1]", end_field, end_str)
+            logger.debug(f"Set endTime: {end_str}")
+            
+            # Click search button
+            search_btn = driver.find_element(By.ID, "searchButton")
+            driver.execute_script("arguments[0].click();", search_btn)
+            logger.info("Clicked search button")
+            
+            # Wait for table to reload with filtered data
+            time.sleep(3)
+            return True
+            
+        except NoSuchElementException as e:
+            logger.warning(f"Date filter elements not found: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Error applying date filter: {e}")
+            return False
+
+    @staticmethod
+    def _has_next_page(driver) -> bool:
+        """
+        Returns True if a clickable 'next page' button exists.
+        Supports AmyUI (.am-pagination-next) and generic patterns.
+        """
+        try:
+            # AmyUI framework next-page button
+            next_li = driver.find_element(By.CSS_SELECTOR, "li.am-pagination-next")
+            classes = next_li.get_attribute("class") or ""
+            return "am-disabled" not in classes
+        except NoSuchElementException:
+            pass
+
+        try:
+            # Generic: link/button containing "下一页"
+            btn = driver.find_element(By.XPATH, "//*[contains(text(),'下一页') and not(@disabled)]")
+            classes = btn.get_attribute("class") or ""
+            return "disabled" not in classes.lower()
+        except NoSuchElementException:
+            pass
+
+        return False
+
+    @staticmethod
+    def _click_next_page(driver) -> bool:
+        """Click next page button. Returns True if clicked."""
+        try:
+            next_li = driver.find_element(By.CSS_SELECTOR, "li.am-pagination-next")
+            link = next_li.find_element(By.TAG_NAME, "a")
+            driver.execute_script("arguments[0].click();", link)
+            time.sleep(2)
+            return True
+        except NoSuchElementException:
+            pass
+
+        try:
+            btn = driver.find_element(By.XPATH, "//*[contains(text(),'下一页') and not(@disabled)]")
+            driver.execute_script("arguments[0].click();", btn)
+            time.sleep(2)
+            return True
+        except NoSuchElementException:
+            pass
+
+        return False
 
     @staticmethod
     def parse_table_data(html_content: str, page_name: str) -> SalesStatisticData:
         """
-        Parse table data from HTML content with proper column mapping.
-
-        Args:
-            html_content: HTML source from Selenium WebDriver
-            page_name: Name/identifier of the page being scraped
-
-        Returns:
-            SalesStatisticData object with extracted records
-
-        Raises:
-            ParsingError: If table parsing fails
+        Parse all records from current page HTML using COLUMN_MAPPING.
+        Does NOT handle pagination — use extract_all_pages for that.
         """
-        try:
-            soup = BeautifulSoup(html_content, "html.parser")
-
-            # Find table (support both id and class selectors)
-            table = soup.find("table")
-            if not table:
-                logger.warning(f"No table found in {page_name}")
-                return SalesStatisticData(
-                    scrape_timestamp=datetime.now(timezone.utc),
-                    submenu=page_name,
-                    records=[],
-                    errors=[],
-                )
-
-            # Extract header row to get column count
-            header_row = table.find("tr")
-            header_cells = header_row.find_all(["th", "td"]) if header_row else []
-            column_count = len(header_cells)
-
-            records = []
-            rows = table.find_all("tr")[1:]  # Skip header row
-
-            for row_idx, row in enumerate(rows):
-                try:
-                    cells = row.find_all("td")
-                    if not cells or len(cells) < 2:
-                        continue
-
-                    # Extract cell texts
-                    cell_texts = [cell.get_text(strip=True) for cell in cells]
-
-                    if not cell_texts:
-                        continue
-
-                    # Use first non-empty cell as ID
-                    record_id = None
-                    for text in cell_texts:
-                        if text and text != "checkbox" and text != "操作":
-                            record_id = text
-                            break
-
-                    if not record_id:
-                        record_id = f"{page_name}_{row_idx}"
-
-                    # Create SalesRecord with ID from first meaningful column
-                    record = SalesRecord(
-                        id=record_id,
-                        timestamp=datetime.now(timezone.utc),
-                    )
-                    records.append(record)
-
-                except Exception as e:
-                    error_msg = f"Error parsing row {row_idx} in {page_name}: {str(e)}"
-                    logger.error(error_msg)
-                    continue
-
-            logger.info(f"Parsed {len(records)} records from {page_name}")
-
-            return SalesStatisticData(
-                scrape_timestamp=datetime.now(timezone.utc),
-                submenu=page_name,
-                records=records,
-                errors=[],
-            )
-
-        except Exception as e:
-            error_msg = f"Failed to parse data from {page_name}: {str(e)}"
-            logger.error(error_msg)
-            raise ParsingError(error_msg)
+        columns = DataExtractor.COLUMN_MAPPING.get(page_name, [])
+        records = DataExtractor._parse_one_page(html_content, page_name, columns)
+        return SalesStatisticData(
+            scrape_timestamp=datetime.now(timezone.utc),
+            submenu=page_name,
+            records=records,
+            errors=[],
+        )
 
     @staticmethod
-    def extract_all_pages(driver, urls_dict: dict, start_date=None, end_date=None) -> List[SalesStatisticData]:
+    def extract_all_pages(
+        driver,
+        urls_dict: dict,
+        start_date=None,
+        end_date=None,
+    ) -> List[SalesStatisticData]:
         """
-        Navigate to multiple URLs and extract data from each.
+        Navigate to each URL, apply date filter, paginate through all pages, and extract every row.
 
         Args:
             driver: Selenium WebDriver instance
-            urls_dict: Dictionary mapping page_name -> URL
-            start_date: Optional start date for filtering (datetime with timezone)
-            end_date: Optional end date for filtering (datetime with timezone)
+            urls_dict: {page_name: full_url}
+            start_date: datetime for filtering in website form (e.g., 2026-01-01 00:00:00)
+            end_date: datetime for filtering in website form (e.g., 2026-01-30 23:59:59)
 
         Returns:
-            List of SalesStatisticData from all pages
-
-        Example:
-            urls = {
-                "paydetail": "https://...paydetail.html",
-                "deliverydetail": "https://...deliverydetail.html",
-                ...
-            }
-            data_list = DataExtractor.extract_all_pages(driver, urls, start_date, end_date)
+            List[SalesStatisticData], one entry per target page
         """
-        all_data = []
+        all_data: List[SalesStatisticData] = []
+        logger.info(f"Extracting data from {len(urls_dict)} pages")
+        if start_date and end_date:
+            logger.info(f"Date range: {start_date.date()} to {end_date.date()}")
 
         for page_name, url in urls_dict.items():
+            columns = DataExtractor.COLUMN_MAPPING.get(page_name, [])
+            records: List[SalesRecord] = []
+            errors: List[str] = []
+            page_num = 1
+
             try:
                 logger.info(f"Navigating to {page_name}: {url}")
                 driver.get(url)
                 
-                # Wait for page load (adjust timeout/selector as needed)
-                import time
-                time.sleep(2)  # TODO: Use explicit wait instead
+                # Explicit wait for table to be visible
+                try:
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_all_elements_located((By.TAG_NAME, "table"))
+                    )
+                    logger.debug(f"{page_name}: table loaded")
+                except TimeoutException:
+                    logger.warning(f"{page_name}: table did not load within 10s")
+                
+                time.sleep(1)  # Extra buffer for rendering
+                
+                # Apply date filter if dates provided
+                if start_date and end_date:
+                    DataExtractor._apply_date_filter(driver, start_date, end_date)
+                    # Re-wait for filtered table
+                    try:
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_all_elements_located((By.TAG_NAME, "table"))
+                        )
+                        logger.debug(f"{page_name}: filtered table loaded")
+                    except TimeoutException:
+                        logger.warning(f"{page_name}: filtered table did not load")
 
-                # Get page source and parse
-                html = driver.page_source
-                data = DataExtractor.parse_table_data(html, page_name)
-                
-                # TODO: Filter by date range if provided
-                # This is where you'd filter records by start_date and end_date
-                # Example:
-                # if start_date and end_date:
-                #     data.records = [r for r in data.records 
-                #                     if start_date <= r.timestamp <= end_date]
-                
-                all_data.append(data)
+                while True:
+                    # Extract current page
+                    html = driver.page_source
+                    page_records = DataExtractor._parse_one_page(html, page_name, columns)
+                    records.extend(page_records)
+                    logger.info(f"{page_name} page {page_num}: scraped {len(page_records)} records")
+
+                    # Check for next button and click
+                    if DataExtractor._has_next_page(driver):
+                        logger.debug(f"{page_name}: found next button, clicking page {page_num + 1}")
+                        DataExtractor._click_next_page(driver)
+                        page_num += 1
+                    else:
+                        logger.debug(f"{page_name}: no next button found, pagination complete")
+                        break
+
+                logger.info(f"Parsed {len(records)} total records from {page_name} ({page_num} page(s))")
 
             except Exception as e:
-                logger.error(f"Failed to extract data from {page_name}: {str(e)}")
-                # Add error-only data record
-                all_data.append(
-                    SalesStatisticData(
-                        scrape_timestamp=datetime.now(timezone.utc),
-                        submenu=page_name,
-                        records=[],
-                        errors=[str(e)],
-                    )
+                msg = f"Failed to extract {page_name}: {e}"
+                logger.error(msg)
+                errors.append(msg)
+
+            all_data.append(
+                SalesStatisticData(
+                    scrape_timestamp=datetime.now(timezone.utc),
+                    submenu=page_name,
+                    records=records,
+                    errors=errors,
                 )
+            )
 
         return all_data
+

@@ -115,6 +115,8 @@ class Config:
             )
             cls._target_urls = cls._parse_target_urls(os.getenv("TARGET_URLS", default_urls))
         return cls._target_urls
+
+    @classmethod
     def validate(cls) -> bool:
         """Validate critical configuration values."""
         if not cls.WEBSITE_MSISDN:

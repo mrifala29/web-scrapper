@@ -3,7 +3,7 @@ Pydantic data models for Sales Statistic data.
 Define data schemas for validation and serialization.
 """
 from pydantic import BaseModel, Field, model_validator
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 
 
@@ -13,32 +13,16 @@ def _utcnow() -> datetime:
 
 class SalesRecord(BaseModel):
     """
-    Individual sales record model.
-    TODO: Update fields based on actual website data structure.
+    Individual sales record with all columns from the scraped table.
+    data: dict maps column_name -> cell_value for every column in the row.
     """
 
-    id: Optional[str] = Field(None, description="Record ID or unique identifier")
-    timestamp: Optional[datetime] = Field(
-        default_factory=_utcnow, description="Record timestamp"
+    scrape_timestamp: datetime = Field(
+        default_factory=_utcnow, description="When this record was scraped"
     )
-    # TODO: Add actual fields from website
-    # Example fields (replace with actual):
-    # date: str
-    # operator: str
-    # total_messages: int
-    # delivered: int
-    # failed: int
-    # ...
-
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
-            "example": {
-                "id": "1",
-                "timestamp": "2026-05-04T08:30:00",
-            }
-        }
+    data: Dict[str, Any] = Field(
+        default_factory=dict, description="All column values keyed by column header"
+    )
 
 
 class SalesStatisticData(BaseModel):

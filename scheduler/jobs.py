@@ -79,10 +79,15 @@ def scraping_job() -> None:
         )
 
         storage = JSONStorage()
-        
-        # Save in primary format (JSON)
-        filename = storage.save_data(report.model_dump(), "scraping_report")
-        logger.info(f"Report saved to: {filename}")
+
+        # Save one JSON file per target page
+        saved_files = storage.save_per_target(all_data, start_date=start_date, end_date=end_date)
+        logger.info(f"Saved {len(saved_files)} per-target JSON files")
+
+        # Also save combined report for reference
+        report_data = report.model_dump()
+        storage.save_data(report_data, start_date=start_date, end_date=end_date)
+        logger.info(f"Combined report saved: {start_date.date()} to {end_date.date()}")
 
         # Save in additional formats based on config
         if Config.OUTPUT_FORMAT == "jsonl" or Config.OUTPUT_FORMAT == "clickhouse":
