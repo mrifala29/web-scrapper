@@ -109,8 +109,31 @@ def scraping_job() -> None:
             
             logger.info(f"JSONL data saved to: {jsonl_filename}")
 
-        # Step 5: Cleanup old backups
-        logger.info("Step 5: Cleaning up old backup files")
+        # Step 5: Insert into ClickHouse (if configured)
+        if Config.clickhouse_enabled():
+            logger.info("Step 5: Inserting data into ClickHouse")
+            from storage.clickhouse_storage import ClickHouseStorage
+            ch_storage = ClickHouseStorage(
+                host=Config.CLICKHOUSE_HOST,
+                port=Config.CLICKHOUSE_PORT,
+                database=Config.CLICKHOUSE_DATABASE,
+                username=Config.CLICKHOUSE_USER,
+                password=Config.CLICKHOUSE_PASSWORD,
+                secure=Config.CLICKHOUSE_SECURE,
+            )
+            try:
+                ch_storage.connect()
+                ch_inserted = ch_storage.insert_all(all_data, start_date=start_date, end_date=end_date)
+                logger.info(f"ClickHouse: inserted {ch_inserted} total rows across all tables")
+            except Exception as ch_exc:
+                logger.error(f"ClickHouse insert failed: {ch_exc}", exc_info=True)
+            finally:
+                ch_storage.close()
+        else:
+            logger.info("Step 5: ClickHouse not configured (CLICKHOUSE_HOST empty), skipping")
+
+        # Step 6: Cleanup old backups
+        logger.info("Step 6: Cleaning up old backup files")
         storage.cleanup_old_files(keep_count=10)
         logger.info("Cleanup completed")
 

@@ -62,6 +62,19 @@ class Config:
     SCHEDULE_TIME: str = os.getenv("SCHEDULE_TIME", "02:00")
     SCHEDULE_TIMEZONE: str = os.getenv("SCHEDULE_TIMEZONE", "UTC")
 
+    # ClickHouse
+    CLICKHOUSE_HOST: str = os.getenv("CLICKHOUSE_HOST", "")
+    CLICKHOUSE_PORT: int = int(os.getenv("CLICKHOUSE_PORT", "8123"))
+    CLICKHOUSE_DATABASE: str = os.getenv("CLICKHOUSE_DATABASE", "hbshengma")
+    CLICKHOUSE_USER: str = os.getenv("CLICKHOUSE_USER", "default")
+    CLICKHOUSE_PASSWORD: str = os.getenv("CLICKHOUSE_PASSWORD", "")
+    CLICKHOUSE_SECURE: bool = os.getenv("CLICKHOUSE_SECURE", "false").lower() == "true"
+
+    @classmethod
+    def clickhouse_enabled(cls) -> bool:
+        """Returns True if ClickHouse host is configured."""
+        return bool(cls.CLICKHOUSE_HOST)
+
     # Helper methods - Parse dates and target URLs
     @staticmethod
     def _parse_date(date_str: str) -> datetime:

@@ -8,6 +8,9 @@ requests==2.31.0
 pydantic==2.5.0
 python-dotenv==1.0.0
 
+# ClickHouse
+clickhouse-connect==0.8.14
+
 # Scheduling
 APScheduler==3.10.4
 
