@@ -17,21 +17,25 @@ def _override_dates(start: str | None, end: str | None, yesterday: bool) -> None
     """
     Override START_DATE / END_DATE in Config from CLI arguments.
     Priority: --start-date/--end-date > --yesterday > .env values
+    
+    All dates are in UTC (server timezone). Website, ClickHouse, and server all use UTC.
+    For Jakarta timezone reference: add 7 hours. Example:
+      - UTC: 2026-01-01 00:00:00 = Jakarta: 2026-01-01 07:00:00
     """
-    jakarta = ZoneInfo("Asia/Jakarta")
+    utc = ZoneInfo("UTC")
 
     if yesterday:
-        today = datetime.now(jakarta).date()
+        today = datetime.now(utc).date()
         y = today - timedelta(days=1)
-        Config._start_date = datetime(y.year, y.month, y.day, tzinfo=jakarta)
-        Config._end_date = datetime(y.year, y.month, y.day, tzinfo=jakarta)
-        logger.info(f"--yesterday: scraping {y} (Asia/Jakarta)")
+        Config._start_date = datetime(y.year, y.month, y.day, tzinfo=utc)
+        Config._end_date = datetime(y.year, y.month, y.day, tzinfo=utc)
+        logger.info(f"--yesterday: scraping {y} UTC (cron will use server timezone)")
         return
 
     if start:
         try:
             d = datetime.strptime(start, "%Y-%m-%d")
-            Config._start_date = d.replace(tzinfo=jakarta)
+            Config._start_date = d.replace(tzinfo=utc)
         except ValueError:
             print(f"ERROR: --start-date format invalid: '{start}'. Use YYYY-MM-DD")
             sys.exit(1)
@@ -39,14 +43,14 @@ def _override_dates(start: str | None, end: str | None, yesterday: bool) -> None
     if end:
         try:
             d = datetime.strptime(end, "%Y-%m-%d")
-            Config._end_date = d.replace(tzinfo=jakarta)
+            Config._end_date = d.replace(tzinfo=utc)
         except ValueError:
             print(f"ERROR: --end-date format invalid: '{end}'. Use YYYY-MM-DD")
             sys.exit(1)
 
     if start or end:
         logger.info(
-            f"Date range override: {Config._start_date.date()} → {Config._end_date.date()}"
+            f"Date range override: {Config._start_date.date()} → {Config._end_date.date()} UTC"
         )
 
 
@@ -130,17 +134,17 @@ def main() -> None:
     parser.add_argument(
         "--yesterday",
         action="store_true",
-        help="Override date range to yesterday (Asia/Jakarta). Use with --run-once for daily cron.",
+        help="Override date range to yesterday (UTC). Perfect for daily cron on server.",
     )
     parser.add_argument(
         "--start-date",
         metavar="YYYY-MM-DD",
-        help="Override START_DATE (Asia/Jakarta). Use with --run-once for historical backfill.",
+        help="Override START_DATE (UTC). Use for historical backfill. Max 31 days range recommended.",
     )
     parser.add_argument(
         "--end-date",
         metavar="YYYY-MM-DD",
-        help="Override END_DATE (Asia/Jakarta). Max 31 days range recommended.",
+        help="Override END_DATE (UTC). Format: YYYY-MM-DD",
     )
     parser.add_argument(
         "--schedule",

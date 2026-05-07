@@ -78,11 +78,15 @@ class Config:
     # Helper methods - Parse dates and target URLs
     @staticmethod
     def _parse_date(date_str: str) -> datetime:
-        """Parse date string (YYYY-MM-DD) to datetime with Jakarta timezone."""
-        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        """Parse date string (YYYY-MM-DD) to datetime with UTC timezone.
+        
+        All dates use UTC (server, website, ClickHouse timezone).
+        For Jakarta reference: add 7 hours to UTC time.
+        """
+        utc_tz = ZoneInfo("UTC")
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
-            return dt.replace(tzinfo=jakarta_tz)
+            return dt.replace(tzinfo=utc_tz)
         except ValueError as e:
             raise ValueError(f"Invalid date format '{date_str}': {e}")
 
@@ -97,17 +101,17 @@ class Config:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid TARGET_URLS JSON: {e}")
 
-    # Date Range (Asia/Jakarta timezone) - Lazy initialization
+    # Date Range (UTC timezone) - Lazy initialization
     @classmethod
     def get_start_date(cls) -> datetime:
-        """Get START_DATE with Jakarta timezone."""
+        """Get START_DATE with UTC timezone."""
         if not hasattr(cls, "_start_date"):
             cls._start_date = cls._parse_date(os.getenv("START_DATE", "2026-01-01"))
         return cls._start_date
 
     @classmethod
     def get_end_date(cls) -> datetime:
-        """Get END_DATE with Jakarta timezone."""
+        """Get END_DATE with UTC timezone."""
         if not hasattr(cls, "_end_date"):
             cls._end_date = cls._parse_date(os.getenv("END_DATE", "2026-05-05"))
         return cls._end_date
