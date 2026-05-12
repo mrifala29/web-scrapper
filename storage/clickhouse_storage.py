@@ -7,6 +7,7 @@ from datetime import datetime, date, timezone
 from typing import List, Optional
 
 from models.sales_data import SalesStatisticData
+from models.machine_data import MachineScrapingResult
 from utils.logging_setup import logger
 
 
@@ -254,3 +255,57 @@ class ClickHouseStorage:
             except Exception as exc:
                 logger.error(f"Failed to insert {data.submenu} into ClickHouse: {exc}")
         return total
+
+    def insert_machines(self, result: MachineScrapingResult, scrape_date: datetime) -> int:
+        """
+        Insert machine temperature records into machine_temperature table.
+        Deletes rows for the given scrape_date first (idempotent re-runs).
+        Returns number of rows inserted.
+        """
+        self._ensure_connected()
+
+        if not result.records:
+            logger.info("  machine_temperature: 0 records, nothing to insert")
+            return 0
+
+        date_str = scrape_date.strftime("%Y-%m-%d")
+        delete_query = (
+            f"ALTER TABLE {self._database}.machine_temperature "
+            f"DELETE WHERE scrape_date = '{date_str}'"
+        )
+        self._client.command(delete_query)
+        logger.debug(f"Deleted existing machine_temperature rows for {date_str}")
+
+        ch_columns = [
+            "scrape_date",
+            "scrape_timestamp",
+            "machine_code",
+            "machine_name",
+            "temperature",
+            "temperature_unit",
+            "machine_status",
+            "location",
+        ]
+        rows: list[list] = []
+        for rec in result.records:
+            ts = rec.scrape_timestamp
+            if ts.tzinfo is not None:
+                ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+            rows.append([
+                ts.date(),
+                ts,
+                rec.machine_code,
+                rec.machine_name,
+                rec.temperature,
+                rec.temperature_unit,
+                rec.machine_status,
+                rec.location,
+            ])
+
+        self._client.insert(
+            f"{self._database}.machine_temperature",
+            rows,
+            column_names=ch_columns,
+        )
+        logger.info(f"  machine_temperature: inserted {len(rows)} rows into ClickHouse")
+        return len(rows)

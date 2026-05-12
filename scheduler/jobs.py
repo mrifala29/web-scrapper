@@ -132,8 +132,42 @@ def scraping_job() -> None:
         else:
             logger.info("Step 5: ClickHouse not configured (CLICKHOUSE_HOST empty), skipping")
 
-        # Step 6: Cleanup old backups
-        logger.info("Step 6: Cleaning up old backup files")
+        # Step 6: Machine temperature scraping
+        logger.info("Step 6: Scraping machine temperatures")
+        try:
+            from scrapers.machine_scraper import MachineTemperatureScraper
+            machine_scraper = MachineTemperatureScraper(
+                driver=session_manager.driver,
+                base_url=Config.BASE_URL,
+            )
+            machine_result = machine_scraper.scrape_all()
+            logger.info(
+                f"Machine scraping done: {machine_result.record_count} machines, "
+                f"{len(machine_result.errors)} errors"
+            )
+
+            if Config.clickhouse_enabled() and machine_result.record_count > 0:
+                from storage.clickhouse_storage import ClickHouseStorage
+                ch_machine = ClickHouseStorage(
+                    host=Config.CLICKHOUSE_HOST,
+                    port=Config.CLICKHOUSE_PORT,
+                    database=Config.CLICKHOUSE_DATABASE,
+                    username=Config.CLICKHOUSE_USER,
+                    password=Config.CLICKHOUSE_PASSWORD,
+                    secure=Config.CLICKHOUSE_SECURE,
+                )
+                try:
+                    ch_machine.connect()
+                    ch_machine.insert_machines(machine_result, scrape_date=start_time)
+                except Exception as ch_exc:
+                    logger.error(f"ClickHouse machine insert failed: {ch_exc}", exc_info=True)
+                finally:
+                    ch_machine.close()
+        except Exception as machine_exc:
+            logger.error(f"Machine temperature scraping failed: {machine_exc}", exc_info=True)
+
+        # Step 7: Cleanup old backups
+        logger.info("Step 7: Cleaning up old backup files")
         storage.cleanup_old_files(keep_count=10)
         logger.info("Cleanup completed")
 
