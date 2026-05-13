@@ -129,22 +129,22 @@ def main() -> None:
     parser.add_argument(
         "--run-once",
         action="store_true",
-        help="Run scraper once and exit (useful for testing)",
+        help="Run scraper once and exit (useful for testing). Auto-enabled if date args provided.",
     )
     parser.add_argument(
         "--yesterday",
         action="store_true",
-        help="Override date range to yesterday (UTC). Perfect for daily cron on server.",
+        help="Override date range to yesterday (UTC). Auto-enables run-once. Perfect for daily cron on server.",
     )
     parser.add_argument(
         "--start-date",
         metavar="YYYY-MM-DD",
-        help="Override START_DATE (UTC). Use for historical backfill. Max 31 days range recommended.",
+        help="Override START_DATE (UTC). Auto-enables run-once. Use for historical backfill. Max 31 days range recommended.",
     )
     parser.add_argument(
         "--end-date",
         metavar="YYYY-MM-DD",
-        help="Override END_DATE (UTC). Format: YYYY-MM-DD",
+        help="Override END_DATE (UTC). Auto-enables run-once. Format: YYYY-MM-DD",
     )
     parser.add_argument(
         "--schedule",
@@ -162,12 +162,16 @@ def main() -> None:
     logger.info(f"Web Scraper started at {datetime.now().isoformat()}")
     logger.info(f"Configuration loaded from environment")
 
-    if args.run_once:
-        run_once(start=args.start_date, end=args.end_date, yesterday=args.yesterday)
-    elif args.schedule:
+    # Auto-detect run-once if date arguments provided
+    if args.schedule:
         run_scheduled()
+    elif args.run_once or args.start_date or args.end_date or args.yesterday:
+        # Auto-enabled run-once if any date args provided
+        if (args.start_date or args.end_date or args.yesterday) and not args.run_once:
+            logger.info("Date arguments provided → automatically enabling run-once mode")
+        run_once(start=args.start_date, end=args.end_date, yesterday=args.yesterday)
     else:
-        # Default behavior: run scheduler
+        # Default behavior: run scheduler (no mode specified, no date args)
         logger.info("No mode specified, running in scheduled mode")
         run_scheduled()
 
