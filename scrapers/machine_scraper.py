@@ -42,13 +42,27 @@ class MachineTemperatureScraper:
     # Public API
     # ------------------------------------------------------------------
 
-    def scrape_all(self) -> MachineScrapingResult:
+    def scrape_all(self, start_date=None, end_date=None) -> MachineScrapingResult:
         """
         Scrape all machines across all list pages.
-        Returns MachineScrapingResult with all records.
+        
+        Machine data is real-time current state (not filtered by date range).
+        Date parameters are accepted for API consistency with sales scraper,
+        and logged for reference only.
+        
+        Args:
+            start_date: Optional datetime (logged only, not used for filtering)
+            end_date: Optional datetime (logged only, not used for filtering)
+        
+        Returns:
+            MachineScrapingResult with all records scraped today.
         """
         result = MachineScrapingResult()
         pageno = 1
+        
+        if start_date and end_date:
+            logger.info(f"Machine scraping (date range for reference: {start_date.date()} to {end_date.date()})")
+        logger.info("Machine data is real-time current state (not filtered by date)")
 
         while True:
             list_url = f"{self._base_url}{MACHINE_LIST_BASE}?pageno={pageno}"
@@ -90,11 +104,25 @@ class MachineTemperatureScraper:
                     self._driver.get(list_url)
                     time.sleep(1)
 
+            # Navigate back to list page after processing all machines
+            logger.debug("Navigating back to machine list page for pagination check")
+            self._driver.get(list_url)
+            try:
+                WebDriverWait(self._driver, 10).until(
+                    EC.presence_of_all_elements_located((By.TAG_NAME, "body"))
+                )
+            except TimeoutException:
+                logger.warning("Machine list page did not load after navigation")
+            time.sleep(2)  # Extra wait to ensure page and JS fully loaded
+
             # Check if there is a next page
             if not self._has_next_page():
                 logger.info(f"No next page after machine list page {pageno}")
                 break
 
+            # Click next page and continue
+            logger.info(f"Clicking next page button (page {pageno + 1})")
+            self._click_next_page()
             pageno += 1
 
         result.finalize()
@@ -184,27 +212,89 @@ class MachineTemperatureScraper:
 
     def _has_next_page(self) -> bool:
         """Check if there is a next page button on the machine list."""
+        # Pattern 1: Custom button with onclick="turnPage(N)"
+        try:
+            btn = self._driver.find_element(
+                By.XPATH, "//span[contains(@onclick,'turnPage')]"
+            )
+            logger.debug("Next page button found: onclick=turnPage")
+            return True
+        except NoSuchElementException:
+            logger.debug("Next page button NOT found: onclick=turnPage pattern")
+
+        # Pattern 2: AmyUI pagination
         try:
             nxt = self._driver.find_element(By.CSS_SELECTOR, "li.am-pagination-next")
             classes = nxt.get_attribute("class") or ""
-            return "am-disabled" not in classes
+            is_next = "am-disabled" not in classes
+            logger.debug(f"AmyUI next button found, disabled={not is_next}")
+            return is_next
         except NoSuchElementException:
-            pass
+            logger.debug("Next page button NOT found: AmyUI pattern")
 
+        # Pattern 3: Generic "下一页" button (Chinese text)
         try:
             btn = self._driver.find_element(
                 By.XPATH, "//*[contains(text(),'下一页') and not(@disabled)]"
             )
             classes = btn.get_attribute("class") or ""
-            return "disabled" not in classes.lower()
+            is_next = "disabled" not in classes.lower()
+            logger.debug(f"Generic 下一页 button found, disabled={not is_next}")
+            return is_next
+        except NoSuchElementException:
+            logger.debug("Next page button NOT found: generic pattern")
+
+        # Debug: check if ANY span with turnPage exists (even if hidden/disabled)
+        try:
+            spans = self._driver.find_elements(By.XPATH, "//span[contains(@onclick,'turnPage')]")
+            logger.debug(f"DEBUG: Found {len(spans)} span(s) with onclick=turnPage")
+            for i, span in enumerate(spans):
+                onclick = span.get_attribute("onclick")
+                classes = span.get_attribute("class")
+                parent_classes = span.find_element(By.XPATH, "..").get_attribute("class")
+                logger.debug(
+                    f"  Span {i}: onclick='{onclick}', class='{classes}', parent_class='{parent_classes}'"
+                )
+        except Exception as e:
+            logger.debug(f"Could not debug spans: {e}")
+
+        logger.debug("No next page button detected")
+        return False
+
+    def _click_next_page(self) -> None:
+        """Click the next page button and wait for page to load."""
+        # Pattern 1: onclick="turnPage(N)" button (custom pagination)
+        try:
+            btn = self._driver.find_element(
+                By.XPATH, "//span[contains(@onclick,'turnPage')]"
+            )
+            btn.click()
+            logger.debug("Clicked next page button (onclick=turnPage pattern)")
+            time.sleep(1.5)
+            return
         except NoSuchElementException:
             pass
 
-        return False
+        # Pattern 2: AmyUI next button
+        try:
+            btn = self._driver.find_element(By.CSS_SELECTOR, "li.am-pagination-next a")
+            btn.click()
+            logger.debug("Clicked next page button (AmyUI pattern)")
+            time.sleep(1.5)
+            return
+        except NoSuchElementException:
+            pass
 
-    # ------------------------------------------------------------------
-    # Machine detail page
-    # ------------------------------------------------------------------
+        # Pattern 3: Generic "下一页" link
+        try:
+            btn = self._driver.find_element(By.XPATH, "//a[contains(text(),'下一页')]")
+            btn.click()
+            logger.debug("Clicked next page button (generic pattern)")
+            time.sleep(1.5)
+            return
+        except NoSuchElementException:
+            logger.warning("Could not find next page button to click")
+            raise
 
     def _scrape_machine_detail(self, url: str, list_info: dict) -> MachineRecord:
         """
@@ -241,11 +331,15 @@ class MachineTemperatureScraper:
             "设备温度": "temperature",
             "机器温度": "temperature",
             "当前温度": "temperature",
-            # machine code
+            "extracted_temperature": "temperature",
+            # machine code / serial
             "设备ID": "machine_code",
             "编号": "machine_code",
             "机器码": "machine_code",
             "设备编号": "machine_code",
+            "Nomor seri mesin": "machine_code",
+            "Serial Number": "machine_code",
+            "序列号": "machine_code",
             # machine name
             "设备名称": "machine_name",
             "机器名称": "machine_name",
@@ -273,8 +367,14 @@ class MachineTemperatureScraper:
             if unit_match:
                 record.temperature_unit = unit_match.group(1)
                 record.temperature = t[: unit_match.start()].strip()
-            else:
+            elif not record.temperature_unit:
                 record.temperature_unit = "°C"  # assume Celsius
+        
+        # Check for extracted temperature unit from regex
+        if not record.temperature_unit:
+            extracted_unit = detail_data.get("extracted_temperature_unit")
+            if extracted_unit:
+                record.temperature_unit = extracted_unit
 
         # Fallback: if code/name still missing, try to get from page title or heading
         if not record.machine_code or not record.machine_name:
@@ -290,6 +390,7 @@ class MachineTemperatureScraper:
         - <li>Key: Value</li>
         - <tr><td>Key</td><td>Val</td></tr>
         - <div class="am-u-sm-4">Key</div><div class="am-u-sm-8">Value</div>
+        - Temperature embedded in label text (e.g., "Suhu: 15℃")
         """
         data = {}
 
@@ -336,11 +437,30 @@ class MachineTemperatureScraper:
         for i in range(len(spans) - 1):
             key = spans[i].get_text(strip=True).rstrip("：:")
             if any(label in key for label in _TEMPERATURE_LABELS) or key in (
-                "设备ID", "设备名称", "状态", "位置", "编号"
+                "设备ID", "设备名称", "状态", "位置", "编号", "Nomor seri mesin", "номер серийный"
             ):
                 val = spans[i + 1].get_text(strip=True)
                 if val:
                     data[key] = val
+
+        # Pattern 5: Text nodes with labels that contain temperature embedded
+        # E.g., "Saklar pengontrol suhu (suhu kabinet utama: 15℃)"
+        all_text = soup.get_text(separator="\n")
+        # Look for temperature patterns in labels
+        temp_patterns = [
+            r"(?:suhu|温度|temperature)\s*(?::|：)\s*(\d+(?:\.\d+)?)\s*([℃°C°F℉]?)",
+            r"(\d+(?:\.\d+)?)\s*([℃°C°F℉])",  # just number + unit
+        ]
+        for pattern in temp_patterns:
+            matches = re.findall(pattern, all_text, re.IGNORECASE)
+            if matches:
+                # Store the first match (most relevant)
+                temp_val, unit = matches[0]
+                if temp_val:
+                    data["extracted_temperature"] = temp_val
+                    if unit:
+                        data["extracted_temperature_unit"] = unit
+                    break
 
         return data
 

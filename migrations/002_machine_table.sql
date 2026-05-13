@@ -8,7 +8,7 @@
 --     --multiquery < 002_machine_table.sql
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS hbshengma.machine_temperature
+CREATE TABLE IF NOT EXISTS hbshengma.machine
 (
     scrape_date        Date,
     scrape_timestamp   DateTime,

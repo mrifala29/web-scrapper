@@ -256,25 +256,31 @@ class ClickHouseStorage:
                 logger.error(f"Failed to insert {data.submenu} into ClickHouse: {exc}")
         return total
 
-    def insert_machines(self, result: MachineScrapingResult, scrape_date: datetime) -> int:
+    def insert_machines(self, result: MachineScrapingResult) -> int:
         """
-        Insert machine temperature records into machine_temperature table.
-        Deletes rows for the given scrape_date first (idempotent re-runs).
+        Insert machine records into machine table.
+        
+        Machine data is real-time current state (no historical filtering).
+        Deletes rows for TODAY only, then inserts new data.
+        This ensures fresh data regardless of the date range used in the scraping run.
+        
         Returns number of rows inserted.
         """
         self._ensure_connected()
 
         if not result.records:
-            logger.info("  machine_temperature: 0 records, nothing to insert")
+            logger.info("  machine: 0 records, nothing to insert")
             return 0
 
-        date_str = scrape_date.strftime("%Y-%m-%d")
+        # Always use today's date for machine data (real-time, not historical)
+        today = datetime.now(timezone.utc).date()
+        date_str = today.isoformat()
         delete_query = (
-            f"ALTER TABLE {self._database}.machine_temperature "
+            f"ALTER TABLE {self._database}.machine "
             f"DELETE WHERE scrape_date = '{date_str}'"
         )
         self._client.command(delete_query)
-        logger.debug(f"Deleted existing machine_temperature rows for {date_str}")
+        logger.debug(f"Deleted existing machine rows for today ({date_str})")
 
         ch_columns = [
             "scrape_date",
@@ -303,9 +309,9 @@ class ClickHouseStorage:
             ])
 
         self._client.insert(
-            f"{self._database}.machine_temperature",
+            f"{self._database}.machine",
             rows,
             column_names=ch_columns,
         )
-        logger.info(f"  machine_temperature: inserted {len(rows)} rows into ClickHouse")
+        logger.info(f"  machine: inserted {len(rows)} rows into ClickHouse")
         return len(rows)
