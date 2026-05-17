@@ -5,8 +5,8 @@ Handles browser initialization, cleanup, and request delays.
 import time
 import random
 from selenium import webdriver
+from selenium.webdriver.remote.webdriver import WebDriver
 from typing import Optional
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -25,7 +25,7 @@ class SessionManager:
         self.driver = None
         self.wait = None
 
-    def initialize_driver(self) -> webdriver.WebDriver:
+    def initialize_driver(self) -> WebDriver:
         """
         Initialize and return Selenium WebDriver.
 
@@ -39,9 +39,14 @@ class SessionManager:
             if Config.BROWSER_TYPE == "chrome":
                 options = ChromeOptions()
                 if Config.HEADLESS_MODE:
-                    options.add_argument("--headless")
+                    options.add_argument("--headless=new")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--disable-gpu")
+                options.add_argument("--disable-extensions")
+                options.add_argument("--disable-setuid-sandbox")
+                options.add_argument("--single-process")
+                options.add_argument("--window-size=1920,1080")
                 options.add_argument(f"user-agent={Config.USER_AGENT}")
                 self.driver = webdriver.Chrome(options=options)
 
