@@ -4,13 +4,19 @@ Handles browser initialization, cleanup, and request delays.
 """
 import time
 import random
-from selenium import webdriver
+import os
+import shutil
+import stat
 from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.firefox.service import Service as FirefoxService
+from webdriver_manager.firefox import GeckoDriverManager
+import undetected_chromedriver as uc
+from webdriver_manager.firefox import GeckoDriverManager
 from typing import Optional
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium import webdriver
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from config.config import Config
 from utils.logging_setup import logger
@@ -37,25 +43,45 @@ class SessionManager:
         """
         try:
             if Config.BROWSER_TYPE == "chrome":
-                options = ChromeOptions()
+                options = uc.ChromeOptions()
+                
                 if Config.HEADLESS_MODE:
                     options.add_argument("--headless=new")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("--disable-gpu")
-                options.add_argument("--disable-extensions")
-                options.add_argument("--disable-setuid-sandbox")
-                options.add_argument("--single-process")
+                options.add_argument("--disable-software-rasterizer")
+                options.add_argument("--disable-xss-auditor")
+                options.add_argument("--no-first-run")
+                options.add_argument("--no-default-browser-check")
+                options.add_argument("--disable-sync")
                 options.add_argument("--window-size=1920,1080")
                 options.add_argument(f"user-agent={Config.USER_AGENT}")
-                self.driver = webdriver.Chrome(options=options)
+                
+                logger.info("Initializing undetected ChromeDriver with headless mode")
+                try:
+                    self.driver = uc.Chrome(options=options, version_main=None)
+                except Exception as e:
+                    logger.warning(f"First attempt failed: {str(e)}, retrying without version_main")
+                    self.driver = uc.Chrome(options=options)
 
             elif Config.BROWSER_TYPE == "firefox":
                 options = FirefoxOptions()
                 if Config.HEADLESS_MODE:
                     options.add_argument("--headless")
                 options.add_argument(f"user-agent={Config.USER_AGENT}")
-                self.driver = webdriver.Firefox(options=options)
+                
+                geckodriver_path = shutil.which("geckodriver")
+                if geckodriver_path:
+                    logger.info(f"Using system GeckoDriver: {geckodriver_path}")
+                    service = FirefoxService(geckodriver_path)
+                else:
+                    logger.info("System GeckoDriver not found, using webdriver-manager")
+                    driver_path = GeckoDriverManager().install()
+                    os.chmod(driver_path, stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+                    service = FirefoxService(driver_path)
+                
+                self.driver = webdriver.Firefox(service=service, options=options)
 
             else:
                 raise ValueError(f"Unsupported browser type: {Config.BROWSER_TYPE}")
@@ -69,6 +95,7 @@ class SessionManager:
 
         except Exception as e:
             logger.error(f"Failed to initialize WebDriver: {str(e)}")
+            logger.error("If running on headless server, try: sudo apt-get install -y xvfb libxrender1 libxrandr2")
             raise NetworkError(f"WebDriver initialization failed: {str(e)}")
 
     def quit_driver(self) -> None:
