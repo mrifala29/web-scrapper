@@ -294,6 +294,19 @@ class SessionManager:
         if killed:
             time.sleep(2)  # Allow OS to release ports/file descriptors
 
+        # Clear undetected_chromedriver binary cache so it re-patches on next run.
+        # A stale/incompatible patched binary is the most common cause of
+        # "cannot connect to chrome" on repeated runs.
+        uc_cache_dirs = [
+            os.path.expanduser("~/.local/share/undetected_chromedriver"),
+            os.path.expanduser("~/.cache/undetected_chromedriver"),
+            "/tmp/undetected_chromedriver",
+        ]
+        for d in uc_cache_dirs:
+            if os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+                logger.debug(f"Cleared uc cache: {d}")
+
     @staticmethod
     def apply_request_delay() -> None:
         """Apply random delay between requests to avoid rate limiting."""
