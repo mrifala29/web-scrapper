@@ -102,6 +102,8 @@ class SessionManager:
                     self.driver = uc.Chrome(options=options, version_main=None)
                 except Exception as e:
                     logger.warning(f"First attempt failed: {str(e)}, retrying without version_main")
+                    # Wait to allow OS to cleanup port/resources from failed spawn
+                    time.sleep(2)
                     # Create fresh options object - DO NOT REUSE
                     options = uc.ChromeOptions()
                     if Config.HEADLESS_MODE:
@@ -192,6 +194,9 @@ class SessionManager:
             except Exception as cleanup_error:
                 logger.debug(f"Cleanup during exception: {cleanup_error}")
             
+            # Wait to allow system to fully cleanup ports/resources
+            time.sleep(1)
+            
             raise NetworkError(f"WebDriver initialization failed: {str(e)}")
 
     def quit_driver(self) -> None:
@@ -226,48 +231,73 @@ class SessionManager:
         """
         Force terminate lingering browser processes.
         Essential for headless servers where zombie processes accumulate.
+        
+        This runs AFTER quit_driver() fails to close cleanly, so it's a last resort
+        to ensure resources are freed before next Chrome spawn attempt.
         """
         if not self.driver_process_id:
             return
         
-        logger.debug(f"Checking for lingering processes of driver PID {self.driver_process_id}")
+        logger.debug(f"Starting aggressive process cleanup for driver PID {self.driver_process_id}")
         
         try:
             # Try to get parent process
             try:
                 parent = psutil.Process(self.driver_process_id)
+                logger.debug(f"Found parent process: {parent.pid} ({parent.name()})")
+                
                 # Get all children (Chrome spawns multiple processes)
                 children = parent.children(recursive=True)
+                logger.debug(f"Found {len(children)} child processes to cleanup")
                 
                 if parent.is_running():
-                    logger.warning(f"Driver process {self.driver_process_id} still running, terminating...")
+                    logger.warning(f"Parent Chrome process {self.driver_process_id} still running, terminating...")
                     parent.terminate()
-                    time.sleep(0.3)
+                    time.sleep(0.5)  # Increased from 0.3 to 0.5
                     
                     if parent.is_running():
-                        logger.warning(f"Force killing driver process {self.driver_process_id}")
+                        logger.warning(f"Parent did not terminate gracefully, force killing {self.driver_process_id}")
                         parent.kill()
+                        time.sleep(0.2)
                 
-                # Kill any child processes
+                # Kill any child processes (Chrome spawns renderer, GPU, etc.)
                 for child in children:
                     try:
                         if child.is_running():
-                            logger.debug(f"Terminating child process {child.pid}")
+                            logger.debug(f"Terminating child Chrome process {child.pid}")
                             child.terminate()
                             time.sleep(0.1)
                             if child.is_running():
+                                logger.debug(f"Child {child.pid} did not terminate, killing...")
                                 child.kill()
+                    except psutil.NoSuchProcess:
+                        pass  # Already dead
                     except Exception as e:
                         logger.debug(f"Could not kill child process {child.pid}: {e}")
+                
+                logger.debug(f"Process cleanup complete for {self.driver_process_id}")
                         
             except psutil.NoSuchProcess:
-                logger.debug(f"Driver process {self.driver_process_id} already terminated")
+                logger.debug(f"Driver process {self.driver_process_id} already terminated (not found)")
             except Exception as e:
-                logger.debug(f"Could not access driver process: {e}")
+                logger.debug(f"Could not access driver process details: {e}")
         
         except Exception as e:
-            logger.error(f"Force cleanup failed: {e}")
+            logger.error(f"Force cleanup encountered error: {e}")
 
+    def _cleanup_orphan_chrome_processes(self) -> None:
+        """
+        Kill any orphan Chrome/Chromium processes from previous failed attempts.
+        
+        NOTE: This is disabled by default because iterating all processes on headless
+        servers can be slow and permission-restricted. Instead, we track failed Chrome
+        PIDs in _force_cleanup_processes() which is more targeted and efficient.
+        
+        Prevents "chrome not reachable" errors from accumulating zombie processes
+        on headless servers. Runs before each new Chrome spawn attempt.
+        """
+        # Disabled: Use _force_cleanup_processes() instead which is more targeted
+        pass
 
     @staticmethod
     def apply_request_delay() -> None:
