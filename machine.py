@@ -21,13 +21,30 @@ from utils.retry_handler import RetryHandler, RetryConfig
 
 
 def _cleanup_session(session_manager_holder: dict) -> None:
-    """Quit and remove session_manager from holder (called before each retry)."""
+    """Quit and remove session_manager from holder (called before each retry).
+    
+    Includes aggressive cleanup of leftover Chrome processes on headless servers.
+    """
     sm = session_manager_holder.pop("session_manager", None)
     if sm:
         try:
             sm.quit_driver()
         except Exception as e:
             logger.debug(f"Session cleanup error (ignored): {e}")
+    
+    # Extra cleanup: kill any orphan Chrome/chromedriver processes before retry
+    # This is especially important on headless servers where process cleanup can be slow
+    try:
+        import subprocess
+        result = subprocess.run(
+            "pkill -9 -f 'chrome|chromedriver' || true",
+            shell=True,
+            timeout=5,
+            capture_output=True
+        )
+        logger.info("Cleaned up orphan Chrome processes before retry")
+    except Exception as e:
+        logger.debug(f"Process cleanup attempt failed: {e}")
 
 
 def _execute_machine_scraping(session_manager_holder: dict) -> None:
@@ -151,10 +168,10 @@ def machine_job() -> None:
         logger.info("Machine scraping job started")
         logger.info(f"Run time: {start_time.isoformat()}")
 
-        # Configure retry handler: max 4 attempts, 5 minute delay
+        # Configure retry handler: max 4 attempts, 30 second delay
         retry_config = RetryConfig(
             max_attempts=4,
-            retry_delay_seconds=300,  # 5 minutes
+            retry_delay_seconds=30,   # 30 seconds (faster retry)
             backoff_multiplier=1.0,   # Fixed delay (no exponential backoff)
             retryable_exceptions=(Exception,),  # Retry on all exceptions
         )

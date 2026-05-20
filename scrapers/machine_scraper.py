@@ -179,34 +179,69 @@ class MachineTemperatureScraper:
         return entries
 
     def _extract_list_item_info(self, element) -> dict:
-        """Extract machine code and name from a list item element."""
-        text = element.get_text(separator=" ", strip=True)
-        info = {"raw_text": text}
-
-        # Try to parse machine code: often alphanumeric, e.g. "9fl9g4hgn0f243c"
-        # or labeled as 设备ID, 编号, etc.
-        code_patterns = [
-            r"设备ID[：:]\s*(\S+)",
-            r"编号[：:]\s*(\S+)",
-            r"ID[：:]\s*(\S+)",
-            r"机器码[：:]\s*(\S+)",
-        ]
-        for pat in code_patterns:
-            m = re.search(pat, text)
-            if m:
-                info["machine_code"] = m.group(1)
-                break
-
-        # Machine name: usually Chinese + alphanumeric after "名称" or at start
-        name_patterns = [
-            r"名称[：:]\s*(.+?)(?:\s{2,}|$)",
-            r"设备名称[：:]\s*(.+?)(?:\s{2,}|$)",
-        ]
-        for pat in name_patterns:
-            m = re.search(pat, text)
-            if m:
-                info["machine_name"] = m.group(1).strip()
-                break
+        """Extract machine code and name from a list item element.
+        
+        Handles structured HTML like:
+        <div class="device-item">
+          <div class="title"><a><font dir="auto">V6 - Universitas RUPP - Gedung T</font></a></div>
+          <div class="id"><span class="label">Nomor Peralatan:</span><font dir="auto">h5k8l6ou81i5wsq</font></div>
+        </div>
+        """
+        info = {}
+        
+        # Strategy 1: Structured extraction from device-item divs
+        # Extract machine name from <div class="title"> > font tag
+        title_div = element.find("div", class_="title")
+        if title_div:
+            font = title_div.find("font")
+            if font:
+                text = font.get_text(strip=True)
+                if text and len(text) > 2:
+                    info["machine_name"] = text
+                    logger.debug(f"Machine name from list title: {text}")
+        
+        # Extract machine code from <div class="id"> > font tag (after label)
+        id_div = element.find("div", class_="id")
+        if id_div:
+            font = id_div.find("font")
+            if font:
+                text = font.get_text(strip=True)
+                if text and re.match(r"^[a-zA-Z0-9]+$", text):
+                    info["machine_code"] = text
+                    logger.debug(f"Machine code from list id div: {text}")
+        
+        # Strategy 2: Fallback - parse from all text if structured extraction failed
+        if not info.get("machine_code") or not info.get("machine_name"):
+            text = element.get_text(separator=" ", strip=True)
+            info["raw_text"] = text
+            
+            # Try to parse machine code: often alphanumeric, e.g. "9fl9g4hgn0f243c"
+            if not info.get("machine_code"):
+                code_patterns = [
+                    r"设备ID[：:]\s*(\S+)",
+                    r"编号[：:]\s*(\S+)",
+                    r"ID[：:]\s*(\S+)",
+                    r"机器码[：:]\s*(\S+)",
+                    r"Nomor Peralatan[：:]\s*(\S+)",
+                    r"([a-zA-Z0-9]{16})",  # 16-char alphanumeric code
+                ]
+                for pat in code_patterns:
+                    m = re.search(pat, text)
+                    if m:
+                        info["machine_code"] = m.group(1)
+                        break
+            
+            # Machine name: usually Chinese + alphanumeric after "名称" or at start
+            if not info.get("machine_name"):
+                name_patterns = [
+                    r"名称[：:]\s*(.+?)(?:\s{2,}|$)",
+                    r"设备名称[：:]\s*(.+?)(?:\s{2,}|$)",
+                ]
+                for pat in name_patterns:
+                    m = re.search(pat, text)
+                    if m:
+                        info["machine_name"] = m.group(1).strip()
+                        break
 
         return info
 
@@ -315,9 +350,21 @@ class MachineTemperatureScraper:
 
         record = MachineRecord(scrape_timestamp=datetime.now(timezone.utc))
 
-        # Populate from list info if available
+        # Populate from list info if available (now more reliable from structured HTML)
         record.machine_code = list_info.get("machine_code")
-        record.machine_name = list_info.get("machine_name")
+        record.machine_name = list_info.get("machine_name")  # Use name from list if available
+
+        # Only try to extract from detail page if not found in list
+        if not record.machine_name:
+            # Try to extract machine name from font tag with dir="auto"
+            # Pattern found: <font dir="auto" style="vertical-align: inherit;">V6 - Universitas RUPP - Gedung T</font>
+            font_tags = soup.find_all("font", {"dir": "auto"})
+            for font in font_tags:
+                text = font.get_text(strip=True)
+                if text and len(text) > 2:  # Ensure it's meaningful text
+                    record.machine_name = text
+                    logger.info(f"Machine name from detail page font tag: {text}")
+                    break
 
         # Extract all key-value pairs from detail page
         # Pattern 1: label-value pairs in spans/divs/tds
@@ -340,19 +387,12 @@ class MachineTemperatureScraper:
             "Nomor seri mesin": "machine_code",
             "Serial Number": "machine_code",
             "序列号": "machine_code",
-            # machine name
+            # machine name (fallback if not from font tag)
             "设备名称": "machine_name",
             "机器名称": "machine_name",
             "名称": "machine_name",
-            # status
-            "状态": "machine_status",
-            "设备状态": "machine_status",
-            "运行状态": "machine_status",
-            # location
-            "位置": "location",
-            "地址": "location",
-            "安装位置": "location",
-            "设备位置": "location",
+            # Note: machine_status and location are not extracted (NULL by design)
+            # They are either not available on detail page or require custom logic
         }
 
         for cn_key, field_name in _FIELD_MAP.items():
@@ -465,14 +505,24 @@ class MachineTemperatureScraper:
         return data
 
     def _fill_from_heading(self, soup: BeautifulSoup, record: MachineRecord) -> None:
-        """Try to get machine code/name from page heading or title."""
+        """Try to get machine code/name from page heading, title, or font tags."""
+        # Try standard headings first
         for tag in ["h1", "h2", "h3", "h4", "title"]:
             el = soup.find(tag)
             if el:
                 text = el.get_text(strip=True)
                 if text and not record.machine_name:
                     record.machine_name = text
-                break
+                    return
+
+        # Fallback: try font tag with dir="auto" if still missing
+        if not record.machine_name:
+            font_tags = soup.find_all("font", {"dir": "auto"})
+            for font in font_tags:
+                text = font.get_text(strip=True)
+                if text and len(text) > 2:
+                    record.machine_name = text
+                    return
 
     def _resolve_url(self, href: str) -> str:
         """Convert relative href to absolute URL."""

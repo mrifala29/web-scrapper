@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException, 
+    TimeoutException, 
+    StaleElementReferenceException,
+    InvalidSessionIdException,
+    WebDriverException
+)
+import psutil
 
 from models.sales_data import SalesRecord, SalesStatisticData
 from utils.logging_setup import logger
@@ -217,6 +224,44 @@ class DataExtractor:
         )
 
     @staticmethod
+    def _check_driver_health(driver) -> bool:
+        """
+        Check if WebDriver connection is still healthy.
+        Returns False if driver is disconnected/crashed.
+        """
+        try:
+            # Simple health check - get current URL
+            _ = driver.current_url
+            return True
+        except (InvalidSessionIdException, WebDriverException):
+            logger.warning("WebDriver disconnected or crashed")
+            return False
+        except Exception as e:
+            logger.debug(f"Driver health check exception: {type(e).__name__}")
+            return False
+
+    @staticmethod
+    def _check_chrome_memory(max_memory_percent: float = 80.0) -> bool:
+        """
+        Check if Chrome process is consuming too much memory.
+        Returns False if memory usage exceeds threshold.
+        """
+        try:
+            for proc in psutil.process_iter(['name', 'memory_percent']):
+                if 'chrome' in proc.info['name'].lower():
+                    mem_percent = proc.info['memory_percent'] or 0
+                    if mem_percent > max_memory_percent:
+                        logger.warning(
+                            f"Chrome memory high: {mem_percent:.1f}% "
+                            f"(limit: {max_memory_percent}%)"
+                        )
+                        return False
+            return True
+        except Exception as e:
+            logger.debug(f"Memory check failed: {e}")
+            return True  # Assume OK if can't check
+
+    @staticmethod
     def extract_all_pages(
         driver,
         urls_dict: dict,
@@ -250,6 +295,21 @@ class DataExtractor:
                 logger.info(f"Navigating to {page_name}: {url}")
                 driver.get(url)
                 
+                # Check driver health after navigation
+                if not DataExtractor._check_driver_health(driver):
+                    msg = f"Failed to extract {page_name}: driver disconnected"
+                    logger.error(msg)
+                    errors.append(msg)
+                    all_data.append(
+                        SalesStatisticData(
+                            scrape_timestamp=datetime.now(timezone.utc),
+                            submenu=page_name,
+                            records=records,
+                            errors=errors,
+                        )
+                    )
+                    continue
+                
                 # Explicit wait for table to be visible
                 try:
                     WebDriverWait(driver, 10).until(
@@ -274,19 +334,34 @@ class DataExtractor:
                         logger.warning(f"{page_name}: filtered table did not load")
 
                 while True:
+                    # Health check before each page
+                    if not DataExtractor._check_driver_health(driver):
+                        logger.warning(f"{page_name}: driver disconnected at page {page_num}")
+                        break
+                    
+                    # Memory check
+                    if not DataExtractor._check_chrome_memory(max_memory_percent=85.0):
+                        logger.warning(f"{page_name}: Chrome memory too high, stopping pagination")
+                        break
+                    
                     # Extract current page
-                    html = driver.page_source
-                    page_records = DataExtractor._parse_one_page(html, page_name, columns)
-                    records.extend(page_records)
-                    logger.info(f"{page_name} page {page_num}: scraped {len(page_records)} records")
+                    try:
+                        html = driver.page_source
+                        page_records = DataExtractor._parse_one_page(html, page_name, columns)
+                        records.extend(page_records)
+                        logger.info(f"{page_name} page {page_num}: scraped {len(page_records)} records")
 
-                    # Check for next button and click
-                    if DataExtractor._has_next_page(driver):
-                        logger.debug(f"{page_name}: found next button, clicking page {page_num + 1}")
-                        DataExtractor._click_next_page(driver)
-                        page_num += 1
-                    else:
-                        logger.debug(f"{page_name}: no next button found, pagination complete")
+                        # Check for next button and click
+                        if DataExtractor._has_next_page(driver):
+                            logger.debug(f"{page_name}: found next button, clicking page {page_num + 1}")
+                            DataExtractor._click_next_page(driver)
+                            page_num += 1
+                        else:
+                            logger.debug(f"{page_name}: no next button found, pagination complete")
+                            break
+                    
+                    except (StaleElementReferenceException, WebDriverException) as e:
+                        logger.warning(f"{page_name}: element stale or connection lost at page {page_num}, stopping")
                         break
 
                 logger.info(f"Parsed {len(records)} total records from {page_name} ({page_num} page(s))")

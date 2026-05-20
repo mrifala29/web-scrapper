@@ -278,8 +278,6 @@ class ClickHouseStorage:
             "machine_name",
             "temperature",
             "temperature_unit",
-            "machine_status",
-            "location",
         ]
         rows: list[list] = []
         for rec in result.records:
@@ -293,8 +291,6 @@ class ClickHouseStorage:
                 rec.machine_name,
                 rec.temperature,
                 rec.temperature_unit,
-                rec.machine_status,
-                rec.location,
             ])
 
         self._client.insert(

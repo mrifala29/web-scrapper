@@ -49,98 +49,19 @@ class SessionManager:
             NetworkError: If driver initialization fails
         """
         try:
+            # Kill any leftover Chrome/chromedriver from a previous run
+            self._cleanup_orphan_chrome_processes()
+
+            # Always unset DISPLAY — we rely on --headless=new, not Xvfb
+            os.environ.pop("DISPLAY", None)
+
             if Config.BROWSER_TYPE == "chrome":
-                # Always create fresh ChromeOptions (DO NOT REUSE)
-                options = uc.ChromeOptions()
-                
-                if Config.HEADLESS_MODE:
-                    options.add_argument("--headless=new")
-                
-                # Core stability args
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
-                options.add_argument("--disable-gpu")
-                options.add_argument("--disable-software-rasterizer")
-                options.add_argument("--disable-xss-auditor")
-                options.add_argument("--no-first-run")
-                options.add_argument("--no-default-browser-check")
-                options.add_argument("--disable-sync")
-                
-                # Headless server stability (prevent zombie processes)
-                options.add_argument("--disable-extensions")
-                options.add_argument("--disable-plugins")
-                options.add_argument("--disable-default-apps")
-                options.add_argument("--disable-preconnect")
-                options.add_argument("--no-service-autorun")
-                options.add_argument("--disable-crash-reporter")
-                options.add_argument("--disable-background-networking")
-                options.add_argument("--disable-client-side-phishing-detection")
-                options.add_argument("--disable-component-extensions-with-background-pages")
-                options.add_argument("--disable-default-apps")
-                options.add_argument("--disable-hang-monitor")
-                options.add_argument("--disable-popup-blocking")
-                options.add_argument("--disable-prompt-on-repost")
-                options.add_argument("--disable-reading-from-canvas")
-                options.add_argument("--disable-renderer-backgrounding")
-                options.add_argument("--disable-device-discovery-notifications")
-                
-                # Performance & resource management
-                options.add_argument("--enable-automation")
-                options.add_argument("--disable-background-timer-throttling")
-                options.add_argument("--disable-renderer-backgrounding")
-                options.add_argument("--disable-backgrounding-occluded-windows")
-                options.add_argument("--disable-breakpad")
-                options.add_argument("--disable-client-side-phishing-detection")
-                options.add_argument("--disable-component-extensions")
-                options.add_argument("--disable-component-update")
-                
-                options.add_argument("--window-size=1920,1080")
-                options.add_argument(f"user-agent={Config.USER_AGENT}")
-                
-                logger.info("Initializing undetected ChromeDriver with headless mode")
-                try:
-                    self.driver = uc.Chrome(options=options, version_main=None)
-                except Exception as e:
-                    logger.warning(f"First attempt failed: {str(e)}, retrying without version_main")
-                    # Wait to allow OS to cleanup port/resources from failed spawn
-                    time.sleep(2)
-                    # Create fresh options object - DO NOT REUSE
-                    options = uc.ChromeOptions()
-                    if Config.HEADLESS_MODE:
-                        options.add_argument("--headless=new")
-                    options.add_argument("--no-sandbox")
-                    options.add_argument("--disable-dev-shm-usage")
-                    options.add_argument("--disable-gpu")
-                    options.add_argument("--disable-software-rasterizer")
-                    options.add_argument("--disable-xss-auditor")
-                    options.add_argument("--no-first-run")
-                    options.add_argument("--no-default-browser-check")
-                    options.add_argument("--disable-sync")
-                    options.add_argument("--disable-extensions")
-                    options.add_argument("--disable-plugins")
-                    options.add_argument("--disable-default-apps")
-                    options.add_argument("--disable-preconnect")
-                    options.add_argument("--no-service-autorun")
-                    options.add_argument("--disable-crash-reporter")
-                    options.add_argument("--disable-background-networking")
-                    options.add_argument("--disable-client-side-phishing-detection")
-                    options.add_argument("--disable-component-extensions-with-background-pages")
-                    options.add_argument("--disable-hang-monitor")
-                    options.add_argument("--disable-popup-blocking")
-                    options.add_argument("--disable-prompt-on-repost")
-                    options.add_argument("--disable-reading-from-canvas")
-                    options.add_argument("--disable-renderer-backgrounding")
-                    options.add_argument("--disable-device-discovery-notifications")
-                    options.add_argument("--enable-automation")
-                    options.add_argument("--disable-background-timer-throttling")
-                    options.add_argument("--disable-backgrounding-occluded-windows")
-                    options.add_argument("--disable-breakpad")
-                    options.add_argument("--disable-component-extensions")
-                    options.add_argument("--disable-component-update")
-                    options.add_argument("--window-size=1920,1080")
-                    options.add_argument(f"user-agent={Config.USER_AGENT}")
-                    
-                    self.driver = uc.Chrome(options=options)
+                chrome_version = self._detect_chrome_version()
+                logger.info(f"Detected Chrome major version: {chrome_version}")
+
+                options = self._build_chrome_options()
+                logger.info("Initializing undetected ChromeDriver")
+                self.driver = uc.Chrome(options=options, version_main=chrome_version)
                 
                 # Capture driver process ID for cleanup tracking
                 try:
@@ -194,8 +115,9 @@ class SessionManager:
             except Exception as cleanup_error:
                 logger.debug(f"Cleanup during exception: {cleanup_error}")
             
-            # Wait to allow system to fully cleanup ports/resources
-            time.sleep(1)
+            # Wait longer to allow system to fully cleanup ports/resources
+            # Headless servers can be slow to release file descriptors and ports
+            time.sleep(3)
             
             raise NetworkError(f"WebDriver initialization failed: {str(e)}")
 
@@ -211,7 +133,8 @@ class SessionManager:
             # Step 1: Graceful quit with timeout
             logger.info("Closing WebDriver connections...")
             self.driver.quit()
-            time.sleep(0.5)
+            # Longer wait for graceful cleanup on headless servers
+            time.sleep(1.0)
             logger.info("WebDriver quit successfully")
             
         except Exception as e:
@@ -253,12 +176,13 @@ class SessionManager:
                 if parent.is_running():
                     logger.warning(f"Parent Chrome process {self.driver_process_id} still running, terminating...")
                     parent.terminate()
-                    time.sleep(0.5)  # Increased from 0.3 to 0.5
+                    # Longer wait for graceful termination on headless servers
+                    time.sleep(1.0)
                     
                     if parent.is_running():
                         logger.warning(f"Parent did not terminate gracefully, force killing {self.driver_process_id}")
                         parent.kill()
-                        time.sleep(0.2)
+                        time.sleep(0.5)
                 
                 # Kill any child processes (Chrome spawns renderer, GPU, etc.)
                 for child in children:
@@ -266,10 +190,11 @@ class SessionManager:
                         if child.is_running():
                             logger.debug(f"Terminating child Chrome process {child.pid}")
                             child.terminate()
-                            time.sleep(0.1)
+                            time.sleep(0.2)
                             if child.is_running():
                                 logger.debug(f"Child {child.pid} did not terminate, killing...")
                                 child.kill()
+                                time.sleep(0.1)
                     except psutil.NoSuchProcess:
                         pass  # Already dead
                     except Exception as e:
@@ -285,19 +210,89 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Force cleanup encountered error: {e}")
 
+    def _detect_chrome_version(self) -> int | None:
+        """Return Chrome major version as int, or None if detection fails."""
+        candidates = ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium"]
+        for binary in candidates:
+            try:
+                out = subprocess.check_output(
+                    [binary, "--version"], stderr=subprocess.DEVNULL, timeout=5
+                ).decode()
+                # e.g. "Google Chrome 124.0.6367.91" or "Chromium 124.0.6367.91"
+                parts = out.strip().split()
+                for part in parts:
+                    if part[0].isdigit():
+                        major = int(part.split(".")[0])
+                        return major
+            except Exception:
+                continue
+        logger.warning("Could not detect Chrome version; passing version_main=None")
+        return None
+
+    def _build_chrome_options(self) -> uc.ChromeOptions:
+        """Build a fresh ChromeOptions with all required flags for headless Linux."""
+        options = uc.ChromeOptions()
+        if Config.HEADLESS_MODE:
+            options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-default-browser-check")
+        options.add_argument("--disable-sync")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-plugins")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-crash-reporter")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-hang-monitor")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-prompt-on-repost")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-breakpad")
+        options.add_argument("--disable-component-update")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument(f"user-agent={Config.USER_AGENT}")
+        return options
+
     def _cleanup_orphan_chrome_processes(self) -> None:
         """
-        Kill any orphan Chrome/Chromium processes from previous failed attempts.
-        
-        NOTE: This is disabled by default because iterating all processes on headless
-        servers can be slow and permission-restricted. Instead, we track failed Chrome
-        PIDs in _force_cleanup_processes() which is more targeted and efficient.
-        
-        Prevents "chrome not reachable" errors from accumulating zombie processes
-        on headless servers. Runs before each new Chrome spawn attempt.
+        Kill any orphan Chrome/Chromium/chromedriver processes and clear stale
+        undetected_chromedriver temp files before a new spawn attempt.
         """
-        # Disabled: Use _force_cleanup_processes() instead which is more targeted
-        pass
+        import glob
+        killed = 0
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if any(k in name for k in ("chrome", "chromium", "chromedriver")):
+                    proc.kill()
+                    killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed:
+            logger.info(f"Cleaned up {killed} orphan Chrome/chromedriver process(es)")
+
+        # Clear stale uc temp dirs/files so next spawn starts clean
+        stale_patterns = [
+            "/tmp/.com.google.Chrome*",
+            "/tmp/undetected_chromedriver*",
+            "/tmp/.org.chromium*",
+        ]
+        for pattern in stale_patterns:
+            for path in glob.glob(pattern):
+                try:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        os.remove(path)
+                except Exception:
+                    pass
+
+        if killed:
+            time.sleep(2)  # Allow OS to release ports/file descriptors
 
     @staticmethod
     def apply_request_delay() -> None:
