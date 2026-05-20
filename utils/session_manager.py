@@ -7,6 +7,8 @@ import random
 import os
 import shutil
 import stat
+import psutil
+import subprocess
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from webdriver_manager.firefox import GeckoDriverManager
@@ -30,10 +32,15 @@ class SessionManager:
         """Initialize session manager."""
         self.driver = None
         self.wait = None
+        self.driver_process_id = None
 
     def initialize_driver(self) -> WebDriver:
         """
         Initialize and return Selenium WebDriver.
+        
+        IMPORTANT: This method is stateless - safe to call multiple times.
+        Each call creates fresh ChromeOptions. Any previous failed attempt
+        is cleaned up automatically.
 
         Returns:
             Initialized WebDriver instance
@@ -43,10 +50,13 @@ class SessionManager:
         """
         try:
             if Config.BROWSER_TYPE == "chrome":
+                # Always create fresh ChromeOptions (DO NOT REUSE)
                 options = uc.ChromeOptions()
                 
                 if Config.HEADLESS_MODE:
                     options.add_argument("--headless=new")
+                
+                # Core stability args
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("--disable-gpu")
@@ -55,6 +65,35 @@ class SessionManager:
                 options.add_argument("--no-first-run")
                 options.add_argument("--no-default-browser-check")
                 options.add_argument("--disable-sync")
+                
+                # Headless server stability (prevent zombie processes)
+                options.add_argument("--disable-extensions")
+                options.add_argument("--disable-plugins")
+                options.add_argument("--disable-default-apps")
+                options.add_argument("--disable-preconnect")
+                options.add_argument("--no-service-autorun")
+                options.add_argument("--disable-crash-reporter")
+                options.add_argument("--disable-background-networking")
+                options.add_argument("--disable-client-side-phishing-detection")
+                options.add_argument("--disable-component-extensions-with-background-pages")
+                options.add_argument("--disable-default-apps")
+                options.add_argument("--disable-hang-monitor")
+                options.add_argument("--disable-popup-blocking")
+                options.add_argument("--disable-prompt-on-repost")
+                options.add_argument("--disable-reading-from-canvas")
+                options.add_argument("--disable-renderer-backgrounding")
+                options.add_argument("--disable-device-discovery-notifications")
+                
+                # Performance & resource management
+                options.add_argument("--enable-automation")
+                options.add_argument("--disable-background-timer-throttling")
+                options.add_argument("--disable-renderer-backgrounding")
+                options.add_argument("--disable-backgrounding-occluded-windows")
+                options.add_argument("--disable-breakpad")
+                options.add_argument("--disable-client-side-phishing-detection")
+                options.add_argument("--disable-component-extensions")
+                options.add_argument("--disable-component-update")
+                
                 options.add_argument("--window-size=1920,1080")
                 options.add_argument(f"user-agent={Config.USER_AGENT}")
                 
@@ -63,7 +102,50 @@ class SessionManager:
                     self.driver = uc.Chrome(options=options, version_main=None)
                 except Exception as e:
                     logger.warning(f"First attempt failed: {str(e)}, retrying without version_main")
+                    # Create fresh options object - DO NOT REUSE
+                    options = uc.ChromeOptions()
+                    if Config.HEADLESS_MODE:
+                        options.add_argument("--headless=new")
+                    options.add_argument("--no-sandbox")
+                    options.add_argument("--disable-dev-shm-usage")
+                    options.add_argument("--disable-gpu")
+                    options.add_argument("--disable-software-rasterizer")
+                    options.add_argument("--disable-xss-auditor")
+                    options.add_argument("--no-first-run")
+                    options.add_argument("--no-default-browser-check")
+                    options.add_argument("--disable-sync")
+                    options.add_argument("--disable-extensions")
+                    options.add_argument("--disable-plugins")
+                    options.add_argument("--disable-default-apps")
+                    options.add_argument("--disable-preconnect")
+                    options.add_argument("--no-service-autorun")
+                    options.add_argument("--disable-crash-reporter")
+                    options.add_argument("--disable-background-networking")
+                    options.add_argument("--disable-client-side-phishing-detection")
+                    options.add_argument("--disable-component-extensions-with-background-pages")
+                    options.add_argument("--disable-hang-monitor")
+                    options.add_argument("--disable-popup-blocking")
+                    options.add_argument("--disable-prompt-on-repost")
+                    options.add_argument("--disable-reading-from-canvas")
+                    options.add_argument("--disable-renderer-backgrounding")
+                    options.add_argument("--disable-device-discovery-notifications")
+                    options.add_argument("--enable-automation")
+                    options.add_argument("--disable-background-timer-throttling")
+                    options.add_argument("--disable-backgrounding-occluded-windows")
+                    options.add_argument("--disable-breakpad")
+                    options.add_argument("--disable-component-extensions")
+                    options.add_argument("--disable-component-update")
+                    options.add_argument("--window-size=1920,1080")
+                    options.add_argument(f"user-agent={Config.USER_AGENT}")
+                    
                     self.driver = uc.Chrome(options=options)
+                
+                # Capture driver process ID for cleanup tracking
+                try:
+                    self.driver_process_id = self.driver.service.process.pid
+                    logger.info(f"Chrome process ID: {self.driver_process_id}")
+                except Exception:
+                    pass
 
             elif Config.BROWSER_TYPE == "firefox":
                 options = FirefoxOptions()
@@ -82,6 +164,13 @@ class SessionManager:
                     service = FirefoxService(driver_path)
                 
                 self.driver = webdriver.Firefox(service=service, options=options)
+                
+                # Capture driver process ID for cleanup tracking
+                try:
+                    self.driver_process_id = self.driver.service.process.pid
+                    logger.info(f"Firefox process ID: {self.driver_process_id}")
+                except Exception:
+                    pass
 
             else:
                 raise ValueError(f"Unsupported browser type: {Config.BROWSER_TYPE}")
@@ -96,16 +185,89 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Failed to initialize WebDriver: {str(e)}")
             logger.error("If running on headless server, try: sudo apt-get install -y xvfb libxrender1 libxrandr2")
+            
+            # Force cleanup any lingering processes before raising
+            try:
+                self._force_cleanup_processes()
+            except Exception as cleanup_error:
+                logger.debug(f"Cleanup during exception: {cleanup_error}")
+            
             raise NetworkError(f"WebDriver initialization failed: {str(e)}")
 
     def quit_driver(self) -> None:
-        """Close and quit the WebDriver."""
-        if self.driver:
+        """
+        Close and quit the WebDriver with aggressive cleanup for headless servers.
+        Handles stuck processes and ensures full resource release.
+        """
+        if not self.driver:
+            return
+        
+        try:
+            # Step 1: Graceful quit with timeout
+            logger.info("Closing WebDriver connections...")
+            self.driver.quit()
+            time.sleep(0.5)
+            logger.info("WebDriver quit successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error during graceful quit: {str(e)}")
+        
+        finally:
+            # Step 2: Force kill lingering processes (zombie cleanup)
             try:
-                self.driver.quit()
-                logger.info("WebDriver quit successfully")
+                self._force_cleanup_processes()
+            except Exception as cleanup_error:
+                logger.error(f"Error during process cleanup: {cleanup_error}")
+            
+            self.driver = None
+            self.wait = None
+
+    def _force_cleanup_processes(self) -> None:
+        """
+        Force terminate lingering browser processes.
+        Essential for headless servers where zombie processes accumulate.
+        """
+        if not self.driver_process_id:
+            return
+        
+        logger.debug(f"Checking for lingering processes of driver PID {self.driver_process_id}")
+        
+        try:
+            # Try to get parent process
+            try:
+                parent = psutil.Process(self.driver_process_id)
+                # Get all children (Chrome spawns multiple processes)
+                children = parent.children(recursive=True)
+                
+                if parent.is_running():
+                    logger.warning(f"Driver process {self.driver_process_id} still running, terminating...")
+                    parent.terminate()
+                    time.sleep(0.3)
+                    
+                    if parent.is_running():
+                        logger.warning(f"Force killing driver process {self.driver_process_id}")
+                        parent.kill()
+                
+                # Kill any child processes
+                for child in children:
+                    try:
+                        if child.is_running():
+                            logger.debug(f"Terminating child process {child.pid}")
+                            child.terminate()
+                            time.sleep(0.1)
+                            if child.is_running():
+                                child.kill()
+                    except Exception as e:
+                        logger.debug(f"Could not kill child process {child.pid}: {e}")
+                        
+            except psutil.NoSuchProcess:
+                logger.debug(f"Driver process {self.driver_process_id} already terminated")
             except Exception as e:
-                logger.error(f"Error quitting WebDriver: {str(e)}")
+                logger.debug(f"Could not access driver process: {e}")
+        
+        except Exception as e:
+            logger.error(f"Force cleanup failed: {e}")
+
 
     @staticmethod
     def apply_request_delay() -> None:

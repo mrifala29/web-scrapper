@@ -259,11 +259,10 @@ class ClickHouseStorage:
     def insert_machines(self, result: MachineScrapingResult) -> int:
         """
         Insert machine records into machine table.
-        
-        Machine data is real-time current state (no historical filtering).
-        Deletes rows for TODAY only, then inserts new data.
-        This ensures fresh data regardless of the date range used in the scraping run.
-        
+
+        Machine data is real-time snapshots taken every 30 minutes.
+        Each run appends new rows — no deletion, so full history is preserved.
+
         Returns number of rows inserted.
         """
         self._ensure_connected()
@@ -271,16 +270,6 @@ class ClickHouseStorage:
         if not result.records:
             logger.info("  machine: 0 records, nothing to insert")
             return 0
-
-        # Always use today's date for machine data (real-time, not historical)
-        today = datetime.now(timezone.utc).date()
-        date_str = today.isoformat()
-        delete_query = (
-            f"ALTER TABLE {self._database}.machine "
-            f"DELETE WHERE scrape_date = '{date_str}'"
-        )
-        self._client.command(delete_query)
-        logger.debug(f"Deleted existing machine rows for today ({date_str})")
 
         ch_columns = [
             "scrape_date",

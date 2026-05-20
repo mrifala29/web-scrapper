@@ -17,29 +17,42 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from config.config import Config
 from utils.logging_setup import logger
 from utils.exceptions import ScraperException
+from utils.retry_handler import RetryHandler, RetryConfig
 
 
-def machine_job() -> None:
+def _cleanup_session(session_manager_holder: dict) -> None:
+    """Quit and remove session_manager from holder (called before each retry)."""
+    sm = session_manager_holder.pop("session_manager", None)
+    if sm:
+        try:
+            sm.quit_driver()
+        except Exception as e:
+            logger.debug(f"Session cleanup error (ignored): {e}")
+
+
+def _execute_machine_scraping(session_manager_holder: dict) -> None:
     """
-    Standalone machine scraping job.
-    Scrapes current machine state and inserts into ClickHouse.
-    No date filtering — machine data is always real-time current state.
+    Inner function for machine scraping (retryable).
+    Designed to be called by retry handler.
+    
+    Always creates a FRESH SessionManager per attempt.
+    Broken sessions are cleaned up before re-raising to ensure
+    next retry starts with a clean state.
+    
+    Raises:
+        Exception: On any scraping error (will be caught by retry handler)
     """
     from scrapers.auth_handler import LoginHandler
     from utils.session_manager import SessionManager
     from scrapers.machine_scraper import MachineTemperatureScraper
 
-    session_manager = None
-    start_time = datetime.now(timezone.utc)
+    # Always create fresh SessionManager for each attempt
+    # Never reuse — a broken driver causes "NoneType has no attribute 'get'"
+    logger.info("Step 1: Initializing WebDriver session")
+    session_manager = SessionManager()
+    session_manager_holder["session_manager"] = session_manager
 
     try:
-        logger.info("=" * 60)
-        logger.info("Machine scraping job started")
-        logger.info(f"Run time: {start_time.isoformat()}")
-
-        # Step 1: Initialize WebDriver
-        logger.info("Step 1: Initializing WebDriver session")
-        session_manager = SessionManager()
         session_manager.initialize_driver()
 
         # Step 2: Login
@@ -84,12 +97,79 @@ def machine_job() -> None:
                     logger.info(f"ClickHouse: inserted {inserted} machine rows")
                 except Exception as ch_exc:
                     logger.error(f"ClickHouse insert failed: {ch_exc}", exc_info=True)
+                    raise ScraperException(f"ClickHouse insert failed: {ch_exc}")
                 finally:
                     ch.close()
             else:
                 logger.info("Step 4: No records to insert, skipping ClickHouse")
         else:
             logger.info("Step 4: ClickHouse not configured (CLICKHOUSE_HOST empty), skipping")
+
+    except Exception as e:
+        # Cleanup broken session before re-raise so next retry starts fresh
+        logger.error(f"Scraping error: {e}")
+        _cleanup_session(session_manager_holder)
+        raise
+
+
+def machine_job() -> None:
+    """
+    Standalone machine scraping job with automatic retry.
+    Scrapes current machine state and inserts into ClickHouse.
+    No date filtering — machine data is always real-time current state.
+    
+    Uses process locking to prevent concurrent execution when multiple
+    schedulers run (e.g., machine job every 30min + main.py at 01:00 UTC).
+    
+    Uses retry handler to recover from connection timeout or temporary failures:
+    - Max 4 attempts total
+    - 5 minute delay between retries
+    - Retries only on connection/scraping errors
+    
+    IMPORTANT: Lock is acquired AFTER successful WebDriver initialization.
+    This ensures lock is released quickly if initialization fails.
+    """
+    from utils.process_lock import ProcessLock
+
+    start_time = datetime.now(timezone.utc)
+    lock = ProcessLock("machine_scraper")
+    session_manager_holder = {}
+
+    try:
+        # Acquire lock at start to prevent concurrent execution.
+        # Stale lock detection: if previous process died, lock is stolen automatically.
+        # Short timeout: if another live instance is running, exit immediately.
+        logger.info("Attempting to acquire machine scraper lock (timeout: 5s)...")
+        if not lock.acquire(timeout=5):
+            logger.warning(
+                "Could not acquire machine scraper lock — another live instance is running. "
+                "Skipping this run to prevent concurrent execution."
+            )
+            return
+
+        logger.info("=" * 60)
+        logger.info("Machine scraping job started")
+        logger.info(f"Run time: {start_time.isoformat()}")
+
+        # Configure retry handler: max 4 attempts, 5 minute delay
+        retry_config = RetryConfig(
+            max_attempts=4,
+            retry_delay_seconds=300,  # 5 minutes
+            backoff_multiplier=1.0,   # Fixed delay (no exponential backoff)
+            retryable_exceptions=(Exception,),  # Retry on all exceptions
+        )
+        retry_handler = RetryHandler(retry_config)
+
+        success = retry_handler.execute_with_retry(
+            _execute_machine_scraping,
+            "machine_scraper",
+            session_manager_holder,
+        )
+
+        if not success:
+            logger.error("Machine job failed after all retry attempts")
+            logger.info("=" * 60)
+            return
 
         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
         logger.info(f"Machine job completed in {elapsed:.2f}s")
@@ -100,8 +180,17 @@ def machine_job() -> None:
     except Exception as e:
         logger.error(f"Unexpected error in machine job: {e}", exc_info=True)
     finally:
+        # Always cleanup: quit driver first
+        session_manager = session_manager_holder.get("session_manager")
         if session_manager:
-            session_manager.quit_driver()
+            try:
+                session_manager.quit_driver()
+            except Exception as cleanup_error:
+                logger.error(f"Error during driver cleanup: {cleanup_error}")
+        
+        # Release lock if still held
+        if lock.held:
+            lock.release()
 
 
 def run_once() -> None:
